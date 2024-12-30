@@ -26,7 +26,31 @@ function Get-HardBounces {
             "event" = "hardBounce"
         }
 
-        $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -Body ($params | ConvertTo-Json -Depth 10)
+        try {
+            $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -Body ($params | ConvertTo-Json -Depth 10)
+        }
+        catch {
+            if ($_.Exception.Response.StatusCode -eq 429) {
+                # Get rate limit reset time from headers
+                $resetTime = $_.Exception.Response.Headers["x-sib-ratelimit-reset"]
+                if ($resetTime) {
+                    $waitSeconds = [int]$resetTime
+                    Write-Warning "Rate limit hit. Waiting $waitSeconds seconds before retrying..."
+                    Start-Sleep -Seconds $waitSeconds
+                    # Retry the same request
+                    $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -Body ($params | ConvertTo-Json -Depth 10)
+                }
+                else {
+                    # If we can't get the reset time, wait 60 seconds as a fallback
+                    Write-Warning "Rate limit hit. Waiting 60 seconds before retrying..."
+                    Start-Sleep -Seconds 60
+                    $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -Body ($params | ConvertTo-Json -Depth 10)
+                }
+            }
+            else {
+                throw
+            }
+        }
 
         if ($response -eq $null -or !$response.events) {
             Write-Output "No more events found."
@@ -40,6 +64,9 @@ function Get-HardBounces {
         }
 
         $offset += $Limit
+
+        # Add a small delay between successful requests to avoid hitting rate limits
+        Start-Sleep -Seconds 1
     } while ($true)
 
     return $hardBounces
